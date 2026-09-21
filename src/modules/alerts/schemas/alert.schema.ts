@@ -9,7 +9,14 @@ export const alertConfigBodySchema = z.object({
   reference_value: z.coerce.number(),
   comparison_operator: z.enum(COMPARISON_OPERATORS),
   message: z.string().trim().max(200).nullable().default(null),
-  active: z.coerce.boolean().default(true),
+  // Não usar z.coerce.boolean(): ele aplica a "truthiness" do JS e transforma a
+  // string "false" em true. Aceita boolean ou os literais "true"/"false".
+  active: z
+    .union([
+      z.boolean(),
+      z.enum(["true", "false"]).transform((value) => value === "true"),
+    ])
+    .default(true),
 });
 
 export const listAlertConfigsQuerySchema = paginationQuerySchema.extend({

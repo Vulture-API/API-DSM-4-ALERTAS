@@ -6,6 +6,8 @@ import {
   InMemoryAlertConfigRepository,
   InMemoryTriggeredAlertRepository,
 } from "@/modules/alerts/repositories/in-memory-alert.repository.js";
+import type { ProcessReadingsService } from "@/modules/rules-engine/services/process-readings.service.js";
+import { RulesEngineWorker } from "@/modules/rules-engine/services/rules-engine.worker.js";
 
 describe("alert routes", () => {
   let app: FastifyInstance;
@@ -73,6 +75,26 @@ describe("alert routes", () => {
       message: null,
       active: true,
     });
+  });
+
+  it("should_parse_active_false_sent_as_string_as_false", async () => {
+    const response = await createConfig({ active: "false" });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().active).toBe(false);
+  });
+
+  it("should_parse_active_true_sent_as_string_as_true", async () => {
+    const response = await createConfig({ active: "true" });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().active).toBe(true);
+  });
+
+  it("should_reject_active_with_a_non_boolean_string", async () => {
+    const response = await createConfig({ active: "no" });
+
+    expect(response.statusCode).toBe(400);
   });
 
   it("should_return_validation_error_when_operator_is_invalid", async () => {
@@ -278,6 +300,27 @@ describe("alert routes", () => {
     expect(response.json().code).toBe("ALERT_ALREADY_ACKNOWLEDGED");
   });
 
+  it("should_let_only_one_of_two_concurrent_acknowledgements_win", async () => {
+    await triggered.create({ alert_config_id: 1, reading_id: 1 });
+
+    const [first, second] = await Promise.all([
+      app.inject({
+        method: "PUT",
+        url: "/api/alerts/triggered/1/acknowledge",
+        payload: { acknowledged_by: 7 },
+      }),
+      app.inject({
+        method: "PUT",
+        url: "/api/alerts/triggered/1/acknowledge",
+        payload: { acknowledged_by: 8 },
+      }),
+    ]);
+
+    expect([first.statusCode, second.statusCode].sort()).toEqual([200, 409]);
+    const winner = first.statusCode === 200 ? 7 : 8;
+    expect((await triggered.findById(1))?.acknowledged_by).toBe(winner);
+  });
+
   it("should_return_not_found_when_acknowledging_unknown_alert", async () => {
     const response = await app.inject({
       method: "PUT",
@@ -293,6 +336,29 @@ describe("alert routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: "ok", rules_engine: false });
+  });
+
+  it("should_return_internal_error_and_not_busy_when_a_manual_cycle_fails", async () => {
+    const failingApp = buildApp({
+      alertConfigRepository: configs,
+      triggeredAlertRepository: triggered,
+      rulesEngineWorker: new RulesEngineWorker(
+        {
+          execute: () => Promise.reject(new Error("db down")),
+        } as unknown as ProcessReadingsService,
+        { intervalMs: 1000 },
+      ),
+    });
+    await failingApp.ready();
+
+    const response = await failingApp.inject({
+      method: "POST",
+      url: "/internal/rules-engine/run",
+    });
+    await failingApp.close();
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().code).toBe("INTERNAL_SERVER_ERROR");
   });
 
   it("should_return_service_unavailable_when_rules_engine_is_not_attached", async () => {

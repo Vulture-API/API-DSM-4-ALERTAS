@@ -214,6 +214,11 @@ verificar(
 
 // --- motor de regras -------------------------------------------------------
 let cliente = null;
+// Só o que este teste inseriu: a limpeza apaga por id, nunca por valor, para
+// não tocar leituras de outra pessoa no banco compartilhado.
+const leiturasInseridas = [];
+// Checkpoint do motor antes do teste (undefined = ainda não lido; null = não existia).
+let checkpointOriginal;
 
 if (!TESTAR_MOTOR) {
   console.log("\nMotor de regras: pulado (--sem-motor)");
@@ -251,7 +256,9 @@ if (!TESTAR_MOTOR) {
          VALUES ($1, $2, extract(epoch from now())::bigint) RETURNING id`,
         [SENSOR_ID, valor],
       );
-      return Number(r.rows[0].id);
+      const id = Number(r.rows[0].id);
+      leiturasInseridas.push(id);
+      return id;
     };
 
     const contarAlertas = async () => {
@@ -261,6 +268,13 @@ if (!TESTAR_MOTOR) {
       );
       return r.rows[0].total;
     };
+
+    // Guarda o checkpoint atual para restaurar no fim: sem isso, leituras de
+    // outra pessoa ainda não processadas (id <= MAX) seriam puladas pelo motor.
+    const { rows: atual } = await cliente.query(
+      `SELECT value FROM processing_checkpoints WHERE key = 'rules_engine_last_reading_id'`,
+    );
+    checkpointOriginal = atual[0]?.value ?? null;
 
     // Põe o checkpoint logo antes das leituras deste teste, para o ciclo não
     // varrer a base inteira nem reavaliar dados de outra pessoa.
@@ -411,11 +425,21 @@ if (cliente) {
       `DELETE FROM triggered_alerts WHERE alert_config_id = ANY($1::int[])`,
       [configsCriadas],
     );
-    await cliente.query(
-      `DELETE FROM readings WHERE sensor_id = $1 AND value IN (20, 38.5)`,
-      [SENSOR_ID],
-    );
-    console.log("  ok   leituras e alertas do teste removidos");
+    await cliente.query(`DELETE FROM readings WHERE id = ANY($1::bigint[])`, [
+      leiturasInseridas,
+    ]);
+    if (checkpointOriginal === null) {
+      await cliente.query(
+        `DELETE FROM processing_checkpoints WHERE key = 'rules_engine_last_reading_id'`,
+      );
+    } else if (checkpointOriginal !== undefined) {
+      await cliente.query(
+        `UPDATE processing_checkpoints SET value = $1, updated_at = current_timestamp
+         WHERE key = 'rules_engine_last_reading_id'`,
+        [checkpointOriginal],
+      );
+    }
+    console.log("  ok   leituras, alertas e checkpoint do teste restaurados");
     passou++;
   } catch (erro) {
     console.log(`  FALHA ao limpar leituras e alertas: ${erro.message}`);

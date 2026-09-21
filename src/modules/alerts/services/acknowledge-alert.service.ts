@@ -25,6 +25,15 @@ export class AcknowledgeAlertService {
     );
 
     if (!acknowledged) {
+      // A escrita é condicional: se outra requisição reconheceu entre a leitura
+      // acima e o UPDATE, a linha já não casa e cai aqui. Relendo, dá para
+      // devolver o 409 correto em vez de sobrescrever quem reconheceu primeiro.
+      const current = await this.triggeredAlertRepository.findById(id);
+
+      if (current?.acknowledged_at) {
+        throw new AlertAlreadyAcknowledgedError();
+      }
+
       throw new TriggeredAlertNotFoundError();
     }
 

@@ -29,6 +29,11 @@ export interface TriggeredAlertRepository {
     filters: ListTriggeredAlertsFilters,
   ): Promise<PaginatedResult<TriggeredAlert>>;
   findById(id: number): Promise<TriggeredAlert | null>;
+  /**
+   * Reconhece o alerta só se ele ainda não foi reconhecido (condição aplicada
+   * na própria escrita). Devolve null se o alerta não existe ou já estava
+   * reconhecido — quem chama distingue os dois casos.
+   */
   acknowledge(id: number, userId: number): Promise<TriggeredAlert | null>;
   existsForReadingAndConfig(
     readingId: number,

@@ -14,7 +14,7 @@ Duas responsabilidades:
 
 ## Stack
 
-Node.js 22 · TypeScript · Fastify 5 · Zod 4 · PostgreSQL (`pg`) · Vitest · ESLint + Prettier
+Node.js 24 · TypeScript · Fastify 5 · Zod 4 · PostgreSQL (`pg`) · Vitest · ESLint + Prettier
 
 ## Como rodar
 
@@ -34,7 +34,7 @@ O motor de regras vem **desligado** por padrão (`RULES_ENGINE_ENABLED="false"`)
 | -------------------------- | ------- | ---------------------------------------------- |
 | `PORT`                     | —       | Porta HTTP                                     |
 | `DATABASE_URL`             | —       | String de conexão do Postgres                  |
-| `RULES_ENGINE_ENABLED`     | `true`  | Liga/desliga o motor de regras nesta instância |
+| `RULES_ENGINE_ENABLED`     | `false` | Liga/desliga o motor de regras nesta instância |
 | `RULES_ENGINE_INTERVAL_MS` | `15000` | Intervalo entre ciclos de processamento        |
 | `RULES_ENGINE_BATCH_SIZE`  | `500`   | Leituras avaliadas por ciclo                   |
 

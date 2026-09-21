@@ -44,7 +44,7 @@ describe("rules engine end to end", () => {
   });
 
   afterEach(async () => {
-    worker.stop();
+    await worker.stop();
     await app.close();
   });
 

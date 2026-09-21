@@ -54,7 +54,7 @@ async function shutdownApp(signal: NodeJS.Signals) {
   console.log(`Received ${signal}. Shutting down application...`);
 
   try {
-    rulesEngineWorker.stop();
+    await rulesEngineWorker.stop();
 
     await app.close();
     await database.end();

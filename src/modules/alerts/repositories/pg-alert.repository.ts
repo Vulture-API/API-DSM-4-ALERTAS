@@ -36,8 +36,24 @@ const TRIGGERED_COLUMNS = `
 
 type WithTotal<T> = T & { total_records: string };
 
+/**
+ * Página + total a partir de um CTE `filtered`. O total vem de uma subconsulta
+ * própria e a página entra por LEFT JOIN: numa página além da última ainda sai
+ * uma linha (com o registro nulo) carregando o total real. Com COUNT(*) OVER()
+ * direto na página, uma página vazia não tinha de onde ler o total e ele virava 0.
+ */
+function pageWithTotal(orderAndLimit: string): string {
+  return `
+    SELECT page.*, total.total_records
+    FROM (SELECT COUNT(*) AS total_records FROM filtered) AS total
+    LEFT JOIN LATERAL (SELECT * FROM filtered ${orderAndLimit}) AS page ON true
+  `;
+}
+
 function stripTotal<T extends object>(rows: WithTotal<T>[]): T[] {
-  return rows.map(({ total_records: _ignored, ...row }) => row as unknown as T);
+  return rows
+    .filter((row) => (row as { id?: unknown }).id != null)
+    .map(({ total_records: _ignored, ...row }) => row as unknown as T);
 }
 
 export class PgAlertConfigRepository implements AlertConfigRepository {
@@ -71,12 +87,13 @@ export class PgAlertConfigRepository implements AlertConfigRepository {
 
     const result = await this.database.query<WithTotal<AlertConfig>>(
       `
-        SELECT ${CONFIG_COLUMNS}, COUNT(*) OVER() AS total_records
-        FROM alert_configs
-        WHERE ($1::int IS NULL OR sensor_id = $1::int)
-          AND ($2::int IS NULL OR manager_user_id = $2::int)
-        ORDER BY id ASC
-        LIMIT $3 OFFSET $4
+        WITH filtered AS (
+          SELECT ${CONFIG_COLUMNS}
+          FROM alert_configs
+          WHERE ($1::int IS NULL OR sensor_id = $1::int)
+            AND ($2::int IS NULL OR manager_user_id = $2::int)
+        )
+        ${pageWithTotal("ORDER BY id ASC LIMIT $3 OFFSET $4")}
       `,
       [
         filters.sensor_id ?? null,
@@ -185,15 +202,16 @@ export class PgTriggeredAlertRepository implements TriggeredAlertRepository {
 
     const result = await this.database.query<WithTotal<TriggeredAlert>>(
       `
-        SELECT ${TRIGGERED_COLUMNS}, COUNT(*) OVER() AS total_records
-        FROM triggered_alerts
-        WHERE (
-          $1::boolean IS NULL
-          OR ($1::boolean = true AND acknowledged_at IS NOT NULL)
-          OR ($1::boolean = false AND acknowledged_at IS NULL)
+        WITH filtered AS (
+          SELECT ${TRIGGERED_COLUMNS}
+          FROM triggered_alerts
+          WHERE (
+            $1::boolean IS NULL
+            OR ($1::boolean = true AND acknowledged_at IS NOT NULL)
+            OR ($1::boolean = false AND acknowledged_at IS NULL)
+          )
         )
-        ORDER BY triggered_at DESC, id DESC
-        LIMIT $2 OFFSET $3
+        ${pageWithTotal("ORDER BY triggered_at DESC, id DESC LIMIT $2 OFFSET $3")}
       `,
       [filters.acknowledged ?? null, filters.limit, offset],
     );
@@ -221,7 +239,7 @@ export class PgTriggeredAlertRepository implements TriggeredAlertRepository {
       `
         UPDATE triggered_alerts
         SET acknowledged_by = $2, acknowledged_at = current_timestamp
-        WHERE id = $1
+        WHERE id = $1 AND acknowledged_at IS NULL
         RETURNING ${TRIGGERED_COLUMNS}
       `,
       [id, userId],

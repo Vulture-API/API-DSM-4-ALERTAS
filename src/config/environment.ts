@@ -12,7 +12,9 @@ const environmentSchema = z.object({
   // Motor de regras
   RULES_ENGINE_ENABLED: z
     .enum(["true", "false"])
-    .default("true")
+    // Desligado por padrão: o banco de development é compartilhado e um motor
+    // ligado sem querer consome o checkpoint do time inteiro.
+    .default("false")
     .transform((value) => value === "true"),
   RULES_ENGINE_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
   RULES_ENGINE_BATCH_SIZE: z.coerce

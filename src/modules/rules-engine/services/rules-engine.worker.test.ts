@@ -37,7 +37,7 @@ describe("RulesEngineWorker", () => {
     worker.start();
     expect(worker.isRunning).toBe(true);
 
-    worker.stop();
+    void worker.stop();
     expect(worker.isRunning).toBe(false);
   });
 
@@ -56,7 +56,7 @@ describe("RulesEngineWorker", () => {
     expect(onCycle).toHaveBeenCalledTimes(1);
   });
 
-  it("should_report_the_error_and_return_null_when_a_cycle_fails", async () => {
+  it("should_report_the_error_and_rethrow_when_a_cycle_fails", async () => {
     const onError = vi.fn();
     const failing = {
       execute: vi.fn().mockRejectedValue(new Error("db down")),
@@ -67,7 +67,7 @@ describe("RulesEngineWorker", () => {
       onError,
     });
 
-    await expect(worker.runOnce()).resolves.toBeNull();
+    await expect(worker.runOnce()).rejects.toThrow("db down");
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
@@ -78,6 +78,82 @@ describe("RulesEngineWorker", () => {
     worker.start();
 
     expect(worker.isRunning).toBe(true);
-    worker.stop();
+    void worker.stop();
+  });
+
+  it("should_return_null_only_when_a_cycle_is_already_running", async () => {
+    let release!: () => void;
+    const slow = {
+      execute: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            release = () =>
+              resolve({
+                readings_processed: 0,
+                alerts_triggered: 0,
+                last_reading_id: 0,
+              });
+          }),
+      ),
+    } as unknown as ProcessReadingsService;
+    const worker = new RulesEngineWorker(slow, { intervalMs: 1000 });
+
+    const first = worker.runOnce();
+    await expect(worker.runOnce()).resolves.toBeNull();
+
+    release();
+    await expect(first).resolves.toMatchObject({ readings_processed: 0 });
+  });
+
+  it("should_wait_for_the_in_flight_cycle_when_stopping", async () => {
+    let release!: () => void;
+    let finished = false;
+    const slow = {
+      execute: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            release = () => {
+              finished = true;
+              resolve({
+                readings_processed: 1,
+                alerts_triggered: 0,
+                last_reading_id: 1,
+              });
+            };
+          }),
+      ),
+    } as unknown as ProcessReadingsService;
+    const worker = new RulesEngineWorker(slow, { intervalMs: 1000 });
+
+    void worker.runOnce();
+    const stopping = worker.stop();
+    setTimeout(() => release(), 20);
+    await stopping;
+
+    expect(finished).toBe(true);
+  });
+
+  it("should_keep_scheduling_after_a_failed_cycle", async () => {
+    const execute = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("db down"))
+      .mockResolvedValue({
+        readings_processed: 0,
+        alerts_triggered: 0,
+        last_reading_id: 0,
+      });
+    const onError = vi.fn();
+    const worker = new RulesEngineWorker(
+      { execute } as unknown as ProcessReadingsService,
+      { intervalMs: 10, onError },
+    );
+
+    worker.start();
+    await vi.waitFor(() =>
+      expect(execute.mock.calls.length).toBeGreaterThan(1),
+    );
+    await worker.stop();
+
+    expect(onError).toHaveBeenCalledTimes(1);
   });
 });

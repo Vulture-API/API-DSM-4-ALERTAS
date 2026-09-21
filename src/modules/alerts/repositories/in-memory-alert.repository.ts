@@ -141,7 +141,7 @@ export class InMemoryTriggeredAlertRepository implements TriggeredAlertRepositor
   ): Promise<TriggeredAlert | null> {
     const alert = this.alerts.find((item) => item.id === id);
 
-    if (!alert) return null;
+    if (!alert || alert.acknowledged_at !== null) return null;
 
     alert.acknowledged_by = userId;
     alert.acknowledged_at = FIXED_DATE;
