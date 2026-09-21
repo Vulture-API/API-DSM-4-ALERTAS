@@ -7,7 +7,8 @@
 # scripts ausentes viram aviso, e o Docker só roda se existir Dockerfile.
 #
 # Etapas (documento "Integração Contínua CI" do Confluence):
-#   Instalação clean room -> Lint -> Tipos -> Testes -> Quality Gate 80% -> Build
+#   Instalação clean room -> Auditoria -> Lint -> Formatação -> Tipos
+#   -> Testes (unitários + integração com Postgres) -> Quality Gate 80% -> Build
 # ---------------------------------------------------------------------------
 name: CI
 
@@ -22,9 +23,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Somente leitura por padrão. Só o job "comment" (que não executa código do PR)
+# recebe permissão de escrever no Pull Request.
 permissions:
   contents: read
-  pull-requests: write
 
 env:
   NODE_VERSION: "24"
@@ -37,13 +39,37 @@ jobs:
     name: Lint, testes e build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      coverage: ${{ steps.coverage_gate.outputs.coverage }}
     defaults:
       run:
-        working-directory: .
+        working-directory: ${{ env.APP_DIR }}
+
+    # Postgres descartável para os testes de integração (*.integration.test.ts),
+    # que só rodam quando TEST_DATABASE_URL está definida.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
 
     steps:
       - name: Checkout do repositório
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Configurar Node.js
         uses: actions/setup-node@v4
@@ -57,7 +83,6 @@ jobs:
 
       - name: Auditoria de vulnerabilidades críticas
         run: npm audit --audit-level=critical
-        continue-on-error: true
 
       - name: Lint
         run: |
@@ -68,12 +93,11 @@ jobs:
           fi
 
       - name: Checagem de formatação
-        continue-on-error: true
         run: |
           if node -e "process.exit(require('./package.json').scripts?.format ? 0 : 1)"; then
             npm run format
           else
-            echo "::notice::Sem script 'format' — etapa pulada."
+            echo "::warning::Sem script 'format' no package.json — etapa pulada. Configure o Prettier para cumprir a DoD."
           fi
 
       - name: Checagem de tipos
@@ -88,6 +112,10 @@ jobs:
 
       - name: Testes com cobertura
         run: |
+          if ! node -e "require.resolve('vitest/package.json')" 2>/dev/null; then
+            echo "::error::Este pipeline mede cobertura com o Vitest, e ele não está nas dependências do projeto. Adicione 'vitest' às devDependencies (padrão do template do time)."
+            exit 1
+          fi
           # Garante o provider de cobertura na versão do vitest do projeto,
           # sem exigir que cada repo o declare no package.json.
           VITEST_VERSION=$(node -p "require('vitest/package.json').version")
@@ -112,7 +140,7 @@ jobs:
           echo "coverage=${COVERAGE}" >> "$GITHUB_OUTPUT"
 
           if [ "$COVERAGE" -lt "$COVERAGE_THRESHOLD" ]; then
-            echo "::error::FALHA: cobertura de ${COVERAGE}% não atinge a DoD (${{ env.COVERAGE_THRESHOLD }}%). Merge bloqueado."
+            echo "::error::FALHA: cobertura de ${COVERAGE}% não atinge a DoD (${COVERAGE_THRESHOLD}%). Merge bloqueado."
             exit 1
           fi
 
@@ -135,44 +163,81 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Comentar resultado no Pull Request
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const status = '${{ job.status }}';
-            const coverage = '${{ steps.coverage_gate.outputs.coverage }}' || 'n/d';
-            const icon = status === 'success' ? '✅' : '❌';
-
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: [
-                `${icon} **Pipeline de CI: ${status}**`,
-                '',
-                `- Cobertura de linhas: **${coverage}%** (mínimo ${{ env.COVERAGE_THRESHOLD }}%)`,
-                `- Commit: \`${context.sha.substring(0, 7)}\``,
-                `- [Ver execução completa](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
-              ].join('\n'),
-            });
-
   docker:
     name: Validar build da imagem Docker
     runs-on: ubuntu-latest
     needs: quality
     timeout-minutes: 15
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout do repositório
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Build da imagem (sem push)
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          SHA: ${{ github.sha }}
         run: |
-          if [ ! -f "${{ env.APP_DIR }}/Dockerfile" ]; then
-            echo "::notice::Sem Dockerfile em ${{ env.APP_DIR }} — etapa pulada."
+          if [ ! -f "$APP_DIR/Dockerfile" ]; then
+            echo "::notice::Sem Dockerfile em $APP_DIR — etapa pulada."
             exit 0
           fi
           # O Docker exige tag em minúsculas; o nome do repositório tem maiúsculas.
-          IMAGE="$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')"
-          docker build -t "$IMAGE:ci-${{ github.sha }}" "${{ env.APP_DIR }}"
+          IMAGE="$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')"
+          docker build -t "$IMAGE:ci-$SHA" "$APP_DIR"
+
+  # Comentário com o resultado no PR. Job separado: é o único com permissão de
+  # escrita e não executa nenhum código vindo do PR.
+  comment:
+    name: Comentar resultado no PR
+    runs-on: ubuntu-latest
+    needs: [quality, docker]
+    # PRs de fork recebem token só de leitura: nesses, o comentário é pulado.
+    if: >-
+      always() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Criar ou atualizar o comentário do CI
+        # O comentário é informativo: nunca derruba o pipeline.
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          DOCKER: ${{ needs.docker.result }}
+          COVERAGE: ${{ needs.quality.outputs.coverage }}
+        with:
+          script: |
+            const marker = '<!-- vulture-ci-report -->';
+            const ok = process.env.QUALITY === 'success' && ['success', 'skipped'].includes(process.env.DOCKER);
+            const coverage = process.env.COVERAGE || 'n/d';
+            const body = [
+              marker,
+              `${ok ? '✅' : '❌'} **Pipeline de CI: ${ok ? 'aprovado' : 'reprovado'}**`,
+              '',
+              `- Lint, testes e build: \`${process.env.QUALITY}\``,
+              `- Imagem Docker: \`${process.env.DOCKER}\``,
+              `- Cobertura de linhas: **${coverage}%** (mínimo ${process.env.COVERAGE_THRESHOLD}%)`,
+              `- Commit: \`${context.sha.substring(0, 7)}\``,
+              `- [Ver execução completa](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            ].join('\n');
+
+            // Um comentário só por PR, atualizado a cada execução.
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }
