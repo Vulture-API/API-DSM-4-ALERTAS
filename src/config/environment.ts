@@ -1,5 +1,6 @@
 import "dotenv/config";
 import "@/config/zod.config.js";
+
 import z from "zod";
 
 const environmentSchema = z.object({
@@ -8,6 +9,18 @@ const environmentSchema = z.object({
     .default("development"),
   PORT: z.coerce.number().int().positive(),
   DATABASE_URL: z.string(),
+  // Motor de regras
+  RULES_ENGINE_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+  RULES_ENGINE_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
+  RULES_ENGINE_BATCH_SIZE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(5000)
+    .default(500),
 });
 
 const result = environmentSchema.safeParse(process.env);
