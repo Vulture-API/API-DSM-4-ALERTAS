@@ -1,0 +1,956 @@
+{
+  "info": {
+    "name": "AgroClima 360 - Alertas (SCRUM-373 / SCRUM-374)",
+    "description": "CRUD de configurações de alerta e motor de processamento de regras.\n\nANTES DE RODAR:\n1. Suba o serviço: npm run dev (porta 3002)\n2. Aplique o schema: npm run db:setup em API-DSM-4-BANCO\n3. Crie um sensor (ver README, seção \"Sensor de teste\")\n4. Selecione o environment e ajuste sensorId\n\nA pasta '05 - Motor de regras' precisa que você insira leituras no banco — cada requisição diz qual SQL rodar antes, no SQL Editor do Neon.\n\nIMPORTANTE para a pasta 05: mantenha RULES_ENGINE_ENABLED=\"false\" no .env. Com o motor agendado, o ciclo automático processa a leitura antes de você chamar a rota manual, e a contagem devolvida vem zerada — o alerta é criado do mesmo jeito, mas fica confuso de acompanhar.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "configId",
+      "value": ""
+    },
+    {
+      "key": "configId2",
+      "value": ""
+    },
+    {
+      "key": "alertaId",
+      "value": ""
+    },
+    {
+      "key": "marca",
+      "value": ""
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Marca única por execução, para não confundir com dados de outro dev",
+          "// no banco de development compartilhado.",
+          "if (!pm.collectionVariables.get('marca')) {",
+          "  pm.collectionVariables.set('marca', 'Smoke ' + Date.now().toString(16).slice(-6).toUpperCase());",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "00 - Saúde",
+      "item": [
+        {
+          "name": "Healthcheck",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('informa o estado do motor', () => {",
+                  "  pm.expect(pm.response.json()).to.have.property('rules_engine');",
+                  "});",
+                  "",
+                  "if (pm.response.json().rules_engine === false) {",
+                  "  console.log('Motor desligado (RULES_ENGINE_ENABLED=false). A rota manual /internal/rules-engine/run continua funcionando.');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Informa também se o motor de regras está agendado nesta instância."
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 - Criação",
+      "item": [
+        {
+          "name": "Criar configuração (201)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 409 && pm.response.json().code === 'SENSOR_NOT_FOUND') {",
+                  "  console.error('O sensor ' + pm.environment.get('sensorId') + ' não existe.');",
+                  "  console.error('Crie um sensor e ajuste a variável sensorId do environment.');",
+                  "}",
+                  "",
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const corpo = pm.response.json();",
+                  "pm.collectionVariables.set('configId', corpo.id);",
+                  "",
+                  "pm.test('id é número', () => pm.expect(corpo.id).to.be.a('number'));",
+                  "pm.test('active começa true', () => pm.expect(corpo.active).to.be.true);",
+                  "pm.test('created_at preenchido', () => pm.expect(corpo.created_at).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sensor_id\": \"{{sensorId}}\",\n  \"reference_value\": 35,\n  \"comparison_operator\": \">\",\n  \"message\": \"{{marca}} temperatura critica\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config"]
+            }
+          }
+        },
+        {
+          "name": "Criar com os opcionais omitidos (201)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const corpo = pm.response.json();",
+                  "pm.collectionVariables.set('configId2', corpo.id);",
+                  "",
+                  "pm.test('manager_user_id padrão é nulo', () => pm.expect(corpo.manager_user_id).to.be.null);",
+                  "pm.test('message padrão é nulo', () => pm.expect(corpo.message).to.be.null);",
+                  "pm.test('active padrão é true', () => pm.expect(corpo.active).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sensor_id\": \"{{sensorId}}\",\n  \"reference_value\": 10,\n  \"comparison_operator\": \"<\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config"]
+            },
+            "description": "Confere os valores padrão definidos no contrato de API."
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 - Validação (400)",
+      "item": [
+        {
+          "name": "Operador de comparação inválido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('código VALIDATION_ERROR', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sensor_id\": \"{{sensorId}}\",\n  \"reference_value\": 10,\n  \"comparison_operator\": \"<>\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config"]
+            },
+            "description": "Só são aceitos: >, <, >=, <=, = e !="
+          }
+        },
+        {
+          "name": "Sem sensor_id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference_value\": 10,\n  \"comparison_operator\": \">\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config"]
+            }
+          }
+        },
+        {
+          "name": "Mensagem acima de 200 caracteres",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sensor_id\": \"{{sensorId}}\",\n  \"reference_value\": 10,\n  \"comparison_operator\": \">\",\n  \"message\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - Conflitos (409)",
+      "item": [
+        {
+          "name": "Sensor inexistente",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('código SENSOR_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('SENSOR_NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sensor_id\": 999999,\n  \"reference_value\": 10,\n  \"comparison_operator\": \">\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - Leitura e atualização",
+      "item": [
+        {
+          "name": "Listar paginado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const corpo = pm.response.json();",
+                  "pm.test('meta segue o contrato', () => {",
+                  "  pm.expect(corpo.meta).to.have.all.keys('total_records', 'total_pages', 'current_page');",
+                  "});",
+                  "pm.test('limit é respeitado', () => pm.expect(corpo.data.length).to.be.at.most(5));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config?page=1&limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Filtrar por sensor_id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('só traz configurações daquele sensor', () => {",
+                  "  const esperado = Number(pm.environment.get('sensorId'));",
+                  "  pm.response.json().data.forEach((c) => pm.expect(c.sensor_id).to.eql(esperado));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config?sensor_id={{sensorId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config"],
+              "query": [
+                {
+                  "key": "sensor_id",
+                  "value": "{{sensorId}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Buscar por id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('devolve a configuração certa', () => {",
+                  "  pm.expect(pm.response.json().id).to.eql(Number(pm.collectionVariables.get('configId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config/{{configId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config", "{{configId}}"]
+            }
+          }
+        },
+        {
+          "name": "Buscar id inexistente (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('código ALERT_CONFIG_NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.json().code).to.eql('ALERT_CONFIG_NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config/999999",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config", "999999"]
+            }
+          }
+        },
+        {
+          "name": "Atualizar configuração (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('continua ativa', () => pm.expect(pm.response.json().active).to.be.true);",
+                  "pm.test('reference_value é 35', () => {",
+                  "  pm.expect(Number(pm.response.json().reference_value)).to.eql(35);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sensor_id\": \"{{sensorId}}\",\n  \"reference_value\": 35,\n  \"comparison_operator\": \">\",\n  \"message\": \"{{marca}} temperatura critica\",\n  \"active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config/{{configId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config", "{{configId}}"]
+            },
+            "description": "Mantém a regra em 35 e ativa — é a que o motor de regras usa na pasta 05."
+          }
+        },
+        {
+          "name": "Atualizar id inexistente (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sensor_id\": \"{{sensorId}}\",\n  \"reference_value\": 1,\n  \"comparison_operator\": \">\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config/999999",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config", "999999"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 - Motor de regras",
+      "description": "Cada requisição aqui pede um SQL antes, rodado no SQL Editor do Neon.\nSem isso não há leitura nova para o motor avaliar.",
+      "item": [
+        {
+          "name": "Ciclo sem leituras novas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const corpo = pm.response.json();",
+                  "",
+                  "// Se outro dev inseriu leitura entre o SQL e esta chamada, o número",
+                  "// pode não ser 0 — por isso a tolerância.",
+                  "pm.test('poucas ou nenhuma leitura pendente', () => {",
+                  "  pm.expect(corpo.readings_processed).to.be.at.most(5);",
+                  "});",
+                  "pm.test('last_reading_id é número, não string', () => {",
+                  "  pm.expect(corpo.last_reading_id).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internal/rules-engine/run",
+              "host": ["{{baseUrl}}"],
+              "path": ["internal", "rules-engine", "run"]
+            },
+            "description": "Rode ANTES, no SQL Editor:\n\nUPDATE processing_checkpoints\nSET value = (SELECT COALESCE(MAX(id), 0)::text FROM readings)\nWHERE key = 'rules_engine_last_reading_id';\n\nIsso põe o checkpoint no fim da base, para o motor avaliar só as leituras que você inserir a seguir — e não reprocessar dados de outra pessoa."
+          }
+        },
+        {
+          "name": "Leitura abaixo do limite não dispara",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const corpo = pm.response.json();",
+                  "pm.test('a leitura foi processada', () => pm.expect(corpo.readings_processed).to.be.at.least(1));",
+                  "",
+                  "// Contagem exata seria frágil: o banco é compartilhado e outro dev pode",
+                  "// ter regra ativa no mesmo sensor. O que importa é a NOSSA regra (>35)",
+                  "// não disparar com valor 20.",
+                  "pm.test('a regra desta execução não disparou', (feito) => {",
+                  "  const configId = Number(pm.collectionVariables.get('configId') || pm.environment.get('configId'));",
+                  "  // URL via replaceIn: resolve {{baseUrl}} de qualquer escopo (environment,",
+                  "  // coleção ou global). pm.environment.get devolvia undefined em alguns casos",
+                  "  // e o erro estourava fora do pm.test, abortando o run antes da limpeza.",
+                  "  pm.sendRequest(pm.variables.replaceIn('{{baseUrl}}') + '/api/alerts/triggered?limit=100', (erro, resposta) => {",
+                  "    try {",
+                  "      pm.expect(erro).to.be.null;",
+                  "      const meus = resposta.json().data.filter((a) => a.alert_config_id === configId);",
+                  "      pm.expect(meus.length, 'alertas da regra desta execução').to.eql(0);",
+                  "      feito();",
+                  "    } catch (e) {",
+                  "      feito(e);",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internal/rules-engine/run",
+              "host": ["{{baseUrl}}"],
+              "path": ["internal", "rules-engine", "run"]
+            },
+            "description": "Rode ANTES, no SQL Editor (troque 1 pelo seu sensor_id):\n\nINSERT INTO readings (sensor_id, value, unix_time)\nVALUES (1, 20.0, extract(epoch from now())::bigint);"
+          }
+        },
+        {
+          "name": "Leitura acima do limite dispara",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "// A contagem do ciclo não serve como prova: se o motor estiver agendado",
+                  "// (RULES_ENGINE_ENABLED=true), o ciclo automático já terá consumido a",
+                  "// leitura e esta chamada devolve zero. O que vale é o alerta ter sido",
+                  "// criado — conferido direto na listagem.",
+                  "pm.test('o alerta da regra desta execução foi criado', (feito) => {",
+                  "  const configId = Number(pm.collectionVariables.get('configId') || pm.environment.get('configId'));",
+                  "  // URL via replaceIn: resolve {{baseUrl}} de qualquer escopo (environment,",
+                  "  // coleção ou global). pm.environment.get devolvia undefined em alguns casos",
+                  "  // e o erro estourava fora do pm.test, abortando o run antes da limpeza.",
+                  "  pm.sendRequest(pm.variables.replaceIn('{{baseUrl}}') + '/api/alerts/triggered?limit=100', (erro, resposta) => {",
+                  "    try {",
+                  "      pm.expect(erro).to.be.null;",
+                  "      const meus = resposta.json().data.filter((a) => a.alert_config_id === configId);",
+                  "      pm.expect(meus.length, 'alertas da regra desta execução').to.be.at.least(1);",
+                  "      feito();",
+                  "    } catch (e) {",
+                  "      feito(e);",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internal/rules-engine/run",
+              "host": ["{{baseUrl}}"],
+              "path": ["internal", "rules-engine", "run"]
+            },
+            "description": "Rode ANTES, no SQL Editor (troque 1 pelo seu sensor_id):\n\nINSERT INTO readings (sensor_id, value, unix_time)\nVALUES (1, 38.5, extract(epoch from now())::bigint);"
+          }
+        },
+        {
+          "name": "Listar alertas pendentes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const configId = Number(pm.collectionVariables.get('configId') || pm.environment.get('configId'));",
+                  "const meu = pm.response.json().data.find((a) => a.alert_config_id === configId);",
+                  "",
+                  "pm.test('o alerta desta execução aparece', () => pm.expect(meu).to.not.be.undefined);",
+                  "",
+                  "if (meu) {",
+                  "  pm.collectionVariables.set('alertaId', meu.id);",
+                  "  pm.test('id é número, não string', () => pm.expect(meu.id).to.be.a('number'));",
+                  "  pm.test('reading_id é número, não string', () => pm.expect(meu.reading_id).to.be.a('number'));",
+                  "  pm.test('ainda não reconhecido', () => pm.expect(meu.acknowledged_at).to.be.null);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/triggered?acknowledged=false",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "triggered"],
+              "query": [
+                {
+                  "key": "acknowledged",
+                  "value": "false"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reprocessar não duplica (idempotência)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const corpo = pm.response.json();",
+                  "pm.test('reprocessou leituras', () => pm.expect(corpo.readings_processed).to.be.at.least(1));",
+                  "// Este assert vale sempre: reprocessar não pode gerar alerta novo",
+                  "// para nenhuma regra, nem a nossa nem a de outro dev.",
+                  "pm.test('nenhum alerta duplicado', () => pm.expect(corpo.alerts_triggered).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internal/rules-engine/run",
+              "host": ["{{baseUrl}}"],
+              "path": ["internal", "rules-engine", "run"]
+            },
+            "description": "Rode ANTES, no SQL Editor — volta o checkpoint para reavaliar as mesmas leituras:\n\nUPDATE processing_checkpoints\nSET value = (SELECT (MAX(id) - 2)::text FROM readings)\nWHERE key = 'rules_engine_last_reading_id';\n\nSimula uma queda no meio do lote. O motor reavalia, mas a checagem de duplicidade impede um segundo alerta para o mesmo par leitura+regra."
+          }
+        },
+        {
+          "name": "Reconhecer alerta (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const corpo = pm.response.json();",
+                  "pm.test('acknowledged_at preenchido', () => pm.expect(corpo.acknowledged_at).to.not.be.null);",
+                  "pm.test('acknowledged_by registrado', () => pm.expect(corpo.acknowledged_by).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"acknowledged_by\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/triggered/{{alertaId}}/acknowledge",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "alerts",
+                "triggered",
+                "{{alertaId}}",
+                "acknowledge"
+              ]
+            },
+            "description": "Pelo contrato de API o corpo seria vazio e o id sairia do JWT. Enquanto o serviço de autenticação não existe, o id vai no corpo."
+          }
+        },
+        {
+          "name": "Reconhecer de novo (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('código ALERT_ALREADY_ACKNOWLEDGED', () => {",
+                  "  pm.expect(pm.response.json().code).to.eql('ALERT_ALREADY_ACKNOWLEDGED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"acknowledged_by\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/triggered/{{alertaId}}/acknowledge",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "alerts",
+                "triggered",
+                "{{alertaId}}",
+                "acknowledge"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reconhecer alerta inexistente (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"acknowledged_by\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/triggered/999999/acknowledge",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "triggered", "999999", "acknowledge"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 - Limpeza",
+      "description": "Remove as configurações criadas. Os alertas disparados saem junto (ON DELETE CASCADE).\n\nAs leituras de teste ficam — apague no SQL Editor se quiser:\nDELETE FROM readings WHERE sensor_id = 1 AND value IN (20.0, 38.5);",
+      "item": [
+        {
+          "name": "Excluir configuração (204)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config/{{configId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config", "{{configId}}"]
+            }
+          }
+        },
+        {
+          "name": "Excluir a segunda configuração (204)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config/{{configId2}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config", "{{configId2}}"]
+            }
+          }
+        },
+        {
+          "name": "Excluir de novo (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/config/{{configId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "alerts", "config", "{{configId}}"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
