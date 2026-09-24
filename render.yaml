@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: api-dsm-4-alertas
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3002
+      - key: RULES_ENGINE_ENABLED
+        value: "true"
+      - key: DATABASE_URL
+        sync: false
