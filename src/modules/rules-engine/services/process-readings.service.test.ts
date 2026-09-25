@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   InMemoryAlertConfigRepository,
@@ -167,6 +167,62 @@ describe("ProcessReadingsService", () => {
 
     expect(result.readings_processed).toBe(2);
     expect(result.last_reading_id).toBe(2);
+  });
+
+  it("should_not_trigger_again_while_the_rule_has_a_pending_alert", async () => {
+    await addConfig();
+    readings.add({ sensor_id: 1, value: 30 });
+    readings.add({ sensor_id: 1, value: 31 });
+
+    const first = await service.execute();
+    readings.add({ sensor_id: 1, value: 32 });
+    const second = await service.execute();
+
+    expect(first.alerts_triggered).toBe(1);
+    expect(second.alerts_triggered).toBe(0);
+    expect(triggered.alerts).toHaveLength(1);
+  });
+
+  it("should_trigger_again_after_the_pending_alert_is_acknowledged", async () => {
+    await addConfig();
+    readings.add({ sensor_id: 1, value: 30 });
+    await service.execute();
+
+    await triggered.acknowledge(1, 1);
+    readings.add({ sensor_id: 1, value: 31 });
+    const result = await service.execute();
+
+    expect(result.alerts_triggered).toBe(1);
+    expect(triggered.alerts.map((alert) => alert.reading_id)).toEqual([1, 2]);
+  });
+
+  it("should_keep_rules_independent_when_deduplicating", async () => {
+    await addConfig({ reference_value: 25 });
+    readings.add({ sensor_id: 1, value: 30 });
+    await service.execute();
+
+    await addConfig({ reference_value: 28 });
+    readings.add({ sensor_id: 1, value: 30 });
+    const result = await service.execute();
+
+    expect(result.alerts_triggered).toBe(1);
+    expect(triggered.alerts.map((alert) => alert.alert_config_id)).toEqual([
+      1, 2,
+    ]);
+  });
+
+  it("should_not_count_an_alert_the_database_refused_as_duplicate_pending", async () => {
+    // Outra instância do motor criou o pendente entre a checagem e o INSERT.
+    await addConfig();
+    await triggered.create({ alert_config_id: 1, reading_id: 99 });
+    vi.spyOn(triggered, "hasPendingForConfig").mockResolvedValue(false);
+    readings.add({ sensor_id: 1, value: 30 });
+    readings.add({ sensor_id: 1, value: 31 });
+
+    const result = await service.execute();
+
+    expect(result.alerts_triggered).toBe(0);
+    expect(triggered.alerts).toHaveLength(1);
   });
 
   it("should_skip_inconsistent_readings", async () => {

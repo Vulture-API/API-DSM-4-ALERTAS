@@ -56,6 +56,8 @@ export class ProcessReadingsService {
       Awaited<ReturnType<AlertConfigRepository["findActiveBySensorId"]>>
     >();
 
+    const pendingByConfig = new Map<number, boolean>();
+
     let alertsTriggered = 0;
 
     for (const reading of readings) {
@@ -71,6 +73,20 @@ export class ProcessReadingsService {
       for (const config of configs) {
         if (!RuleEvaluator.violates(reading, config)) continue;
 
+        // Enquanto a regra tiver um alerta pendente, novas leituras fora do
+        // limite não geram outro: sem isso, uma condição que persiste cria um
+        // alerta por leitura (um por minuto) até alguém reconhecer.
+        // O cache vale só para este lote: um reconhecimento feito durante o
+        // lote passa a valer no ciclo seguinte (atraso de no máximo um ciclo).
+        let pending = pendingByConfig.get(config.id);
+        if (pending === undefined) {
+          pending = await this.triggeredAlertRepository.hasPendingForConfig(
+            config.id,
+          );
+          pendingByConfig.set(config.id, pending);
+        }
+        if (pending) continue;
+
         const alreadyTriggered =
           await this.triggeredAlertRepository.existsForReadingAndConfig(
             reading.id,
@@ -79,10 +95,14 @@ export class ProcessReadingsService {
 
         if (alreadyTriggered) continue;
 
-        await this.triggeredAlertRepository.create({
+        const created = await this.triggeredAlertRepository.create({
           alert_config_id: config.id,
           reading_id: reading.id,
         });
+        pendingByConfig.set(config.id, true);
+        // null: outra instância do motor criou o pendente antes (o índice
+        // único do banco recusou este).
+        if (!created) continue;
 
         alertsTriggered++;
       }

@@ -97,7 +97,16 @@ export class InMemoryTriggeredAlertRepository implements TriggeredAlertRepositor
   async create(data: {
     alert_config_id: number;
     reading_id: number;
-  }): Promise<TriggeredAlert> {
+  }): Promise<TriggeredAlert | null> {
+    // Mesmas restrições dos índices únicos do banco.
+    const duplicate = this.alerts.some(
+      (alert) =>
+        alert.alert_config_id === data.alert_config_id &&
+        (alert.acknowledged_at === null ||
+          alert.reading_id === data.reading_id),
+    );
+    if (duplicate) return null;
+
     const alert: TriggeredAlert = {
       id: this.nextId++,
       alert_config_id: data.alert_config_id,
@@ -105,6 +114,8 @@ export class InMemoryTriggeredAlertRepository implements TriggeredAlertRepositor
       acknowledged_by: null,
       triggered_at: FIXED_DATE,
       acknowledged_at: null,
+      reading_value: null,
+      reading_unix_time: null,
     };
 
     this.alerts.push(alert);
@@ -147,6 +158,14 @@ export class InMemoryTriggeredAlertRepository implements TriggeredAlertRepositor
     alert.acknowledged_at = FIXED_DATE;
 
     return alert;
+  }
+
+  async hasPendingForConfig(alertConfigId: number): Promise<boolean> {
+    return this.alerts.some(
+      (alert) =>
+        alert.alert_config_id === alertConfigId &&
+        alert.acknowledged_at === null,
+    );
   }
 
   async existsForReadingAndConfig(

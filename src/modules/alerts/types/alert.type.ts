@@ -38,6 +38,9 @@ export type TriggeredAlert = {
   acknowledged_by: number | null;
   triggered_at: Date;
   acknowledged_at: Date | null;
+  /** Valor da leitura que disparou o alerta (null se a leitura já expirou). */
+  reading_value: number | null;
+  reading_unix_time: number | null;
 };
 
 export type ListTriggeredAlertsFilters = {

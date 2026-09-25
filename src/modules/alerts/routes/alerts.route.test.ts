@@ -240,7 +240,7 @@ describe("alert routes", () => {
 
   it("should_list_triggered_alerts_with_pagination_meta", async () => {
     await triggered.create({ alert_config_id: 1, reading_id: 1 });
-    await triggered.create({ alert_config_id: 1, reading_id: 2 });
+    await triggered.create({ alert_config_id: 2, reading_id: 2 });
 
     const response = await app.inject({
       method: "GET",
@@ -253,10 +253,10 @@ describe("alert routes", () => {
 
   it("should_filter_triggered_alerts_by_acknowledged_flag", async () => {
     await triggered.create({ alert_config_id: 1, reading_id: 1 });
-    const second = await triggered.create({
-      alert_config_id: 1,
+    const second = (await triggered.create({
+      alert_config_id: 2,
       reading_id: 2,
-    });
+    }))!;
     await triggered.acknowledge(second.id, 1);
 
     const pending = await app.inject({

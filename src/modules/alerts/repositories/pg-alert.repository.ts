@@ -25,13 +25,18 @@ const CONFIG_COLUMNS = `
   created_at
 `;
 
+// reading_value / reading_unix_time: o valor lido que disparou o alerta, para
+// a tela não precisar de outra chamada. Subconsulta (e não JOIN) porque a
+// mesma lista de colunas serve ao INSERT/UPDATE ... RETURNING.
 const TRIGGERED_COLUMNS = `
   id,
   alert_config_id,
   reading_id,
   acknowledged_by,
   triggered_at,
-  acknowledged_at
+  acknowledged_at,
+  (SELECT r.value::float8 FROM readings r WHERE r.id = triggered_alerts.reading_id) AS reading_value,
+  (SELECT r.unix_time::float8 FROM readings r WHERE r.id = triggered_alerts.reading_id) AS reading_unix_time
 `;
 
 type WithTotal<T> = T & { total_records: string };
@@ -182,17 +187,21 @@ export class PgTriggeredAlertRepository implements TriggeredAlertRepository {
   async create(data: {
     alert_config_id: number;
     reading_id: number;
-  }): Promise<TriggeredAlert> {
+  }): Promise<TriggeredAlert | null> {
+    // ON CONFLICT sem alvo cobre os dois índices únicos: (leitura, regra) e
+    // "um pendente por regra". É o que fecha a corrida entre instâncias do
+    // motor: a checagem hasPendingForConfig sozinha não é atômica.
     const result = await this.database.query<TriggeredAlert>(
       `
         INSERT INTO triggered_alerts (alert_config_id, reading_id)
         VALUES ($1, $2)
+        ON CONFLICT DO NOTHING
         RETURNING ${TRIGGERED_COLUMNS}
       `,
       [data.alert_config_id, data.reading_id],
     );
 
-    return result.rows[0]!;
+    return result.rows[0] ?? null;
   }
 
   async findMany(
@@ -246,6 +255,17 @@ export class PgTriggeredAlertRepository implements TriggeredAlertRepository {
     );
 
     return result.rows[0] ?? null;
+  }
+
+  async hasPendingForConfig(alertConfigId: number): Promise<boolean> {
+    const result = await this.database.query(
+      `SELECT 1 FROM triggered_alerts
+       WHERE alert_config_id = $1 AND acknowledged_at IS NULL
+       LIMIT 1`,
+      [alertConfigId],
+    );
+
+    return (result.rowCount ?? 0) > 0;
   }
 
   async existsForReadingAndConfig(
