@@ -21,10 +21,15 @@ export interface AlertConfigRepository {
 }
 
 export interface TriggeredAlertRepository {
+  /**
+   * Cria o alerta de forma atômica. Devolve null (sem erro) quando o banco
+   * recusa por duplicidade: a regra já tem alerta pendente, ou esse par
+   * (leitura, regra) já foi disparado.
+   */
   create(data: {
     alert_config_id: number;
     reading_id: number;
-  }): Promise<TriggeredAlert>;
+  }): Promise<TriggeredAlert | null>;
   findMany(
     filters: ListTriggeredAlertsFilters,
   ): Promise<PaginatedResult<TriggeredAlert>>;
@@ -35,6 +40,8 @@ export interface TriggeredAlertRepository {
    * reconhecido — quem chama distingue os dois casos.
    */
   acknowledge(id: number, userId: number): Promise<TriggeredAlert | null>;
+  /** Há alerta desta regra ainda não reconhecido? */
+  hasPendingForConfig(alertConfigId: number): Promise<boolean>;
   existsForReadingAndConfig(
     readingId: number,
     alertConfigId: number,
