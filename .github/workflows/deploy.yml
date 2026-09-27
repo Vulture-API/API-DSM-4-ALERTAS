@@ -1,0 +1,76 @@
+name: Continuous Deployment (Producao)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-alertas-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify-prerequisites:
+    name: Validacao de Pre-requisitos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirmar branch de producao
+        run: |
+          echo "Iniciando pipeline de entrega continua para a branch main."
+          echo "Servico: API-DSM-4-ALERTAS"
+
+  deploy:
+    name: Deploy API Alertas (Render)
+    needs: verify-prerequisites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Acionar Deploy Hook
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "::warning::Secret RENDER_DEPLOY_HOOK nao configurado. Pulando acionamento automatico via hook."
+            echo "Configure o secret RENDER_DEPLOY_HOOK no repositorio com a URL do deploy hook do Render."
+            exit 0
+          fi
+
+          echo "Disparando requisicao de deploy no Render..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DEPLOY_HOOK")
+          if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 201 ] && [ "$HTTP_STATUS" -ne 202 ]; then
+            echo "::error::Falha ao acionar webhook de deploy. Codigo HTTP retornado: $HTTP_STATUS"
+            exit 1
+          fi
+          echo "Ordem de deploy aceita com sucesso pelo provedor (HTTP $HTTP_STATUS)."
+
+      - name: Smoke Test do Backend (Healthcheck Polling)
+        env:
+          PROD_API_URL: ${{ secrets.PROD_API_URL }}
+        run: |
+          if [ -z "$PROD_API_URL" ]; then
+            echo "::notice::Secret PROD_API_URL nao configurado. Smoke test em producao pulado."
+            exit 0
+          fi
+
+          TARGET_URL="${PROD_API_URL%/}/health"
+          echo "Aguardando inicializacao do servico em $TARGET_URL para verificacao de integridade..."
+          sleep 20
+          SUCCESS=0
+          for i in {1..10}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET_URL" || true)
+            if [ "$STATUS" -eq 200 ]; then
+              echo "Smoke Test concluido com sucesso na tentativa $i. API operacional (HTTP 200)."
+              SUCCESS=1
+              break
+            fi
+            echo "Tentativa $i: status HTTP $STATUS recebido. Aguardando 15 segundos..."
+            sleep 15
+          done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "::error::Falha critica no Smoke Test: Backend nao respondeu com HTTP 200 dentro do tempo limite."
+            exit 1
+          fi

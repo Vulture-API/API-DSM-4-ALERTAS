@@ -1,0 +1,243 @@
+# ---------------------------------------------------------------------------
+# SCRUM-377 — Pipeline de Integração Contínua (Equipe Vulture)
+#
+# Arquivo ÚNICO para todos os repositórios Node/TypeScript do projeto.
+# Copie como está; só ajuste APP_DIR se o package.json não estiver na raiz
+# (ex.: frontend, APP_DIR: app). Cada etapa se adapta ao que o repo tem:
+# scripts ausentes viram aviso, e o Docker só roda se existir Dockerfile.
+#
+# Etapas (documento "Integração Contínua CI" do Confluence):
+#   Instalação clean room -> Auditoria -> Lint -> Formatação -> Tipos
+#   -> Testes (unitários + integração com Postgres) -> Quality Gate 80% -> Build
+# ---------------------------------------------------------------------------
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, develop, main]
+  push:
+    branches: [dev, develop, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Somente leitura por padrão. Só o job "comment" (que não executa código do PR)
+# recebe permissão de escrever no Pull Request.
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+  COVERAGE_THRESHOLD: "80"
+  APP_DIR: "."
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  quality:
+    name: Lint, testes e build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      coverage: ${{ steps.coverage_gate.outputs.coverage }}
+    defaults:
+      run:
+        working-directory: ${{ env.APP_DIR }}
+
+    # Postgres descartável para os testes de integração (*.integration.test.ts),
+    # que só rodam quando TEST_DATABASE_URL está definida.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+
+      - name: Instalar dependências (clean room)
+        run: npm ci
+
+      - name: Auditoria de vulnerabilidades críticas
+        run: npm audit --audit-level=critical
+
+      - name: Lint
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.lint ? 0 : 1)"; then
+            npm run lint
+          else
+            echo "::warning::Sem script 'lint' no package.json — etapa pulada. Configure o ESLint para cumprir a DoD."
+          fi
+
+      - name: Checagem de formatação
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.format ? 0 : 1)"; then
+            npm run format
+          else
+            echo "::warning::Sem script 'format' no package.json — etapa pulada. Configure o Prettier para cumprir a DoD."
+          fi
+
+      - name: Checagem de tipos
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then
+            npm run typecheck
+          else
+            # Next.js gera tipos de rota (ex.: LayoutProps) antes do tsc.
+            if [ -x node_modules/.bin/next ]; then npx next typegen; fi
+            npx tsc --noEmit
+          fi
+
+      - name: Testes com cobertura
+        run: |
+          if ! node -e "require.resolve('vitest/package.json')" 2>/dev/null; then
+            echo "::error::Este pipeline mede cobertura com o Vitest, e ele não está nas dependências do projeto. Adicione 'vitest' às devDependencies (padrão do template do time)."
+            exit 1
+          fi
+          # Garante o provider de cobertura na versão do vitest do projeto,
+          # sem exigir que cada repo o declare no package.json.
+          VITEST_VERSION=$(node -p "require('vitest/package.json').version")
+          if ! node -e "require.resolve('@vitest/coverage-v8/package.json')" 2>/dev/null; then
+            npm install --no-save --no-audit --no-fund "@vitest/coverage-v8@${VITEST_VERSION}"
+          fi
+          npx vitest run --coverage.enabled=true \
+            --coverage.reporter=text --coverage.reporter=json-summary --coverage.reporter=lcov
+
+      - name: Quality Gate de cobertura (DoD 80%)
+        id: coverage_gate
+        run: |
+          SUMMARY="coverage/coverage-summary.json"
+
+          if [ ! -f "$SUMMARY" ]; then
+            echo "::error::Relatório de cobertura não encontrado em $SUMMARY."
+            exit 1
+          fi
+
+          COVERAGE=$(node -p "Math.floor(require('./coverage/coverage-summary.json').total.lines.pct)")
+          echo "Cobertura de linhas: ${COVERAGE}%"
+          echo "coverage=${COVERAGE}" >> "$GITHUB_OUTPUT"
+
+          if [ "$COVERAGE" -lt "$COVERAGE_THRESHOLD" ]; then
+            echo "::error::FALHA: cobertura de ${COVERAGE}% não atinge a DoD (${COVERAGE_THRESHOLD}%). Merge bloqueado."
+            exit 1
+          fi
+
+          echo "::notice::Quality Gate aprovado: ${COVERAGE}% de cobertura."
+
+      - name: Build
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+            npm run build
+          else
+            echo "::warning::Sem script 'build' — etapa pulada."
+          fi
+
+      - name: Publicar relatório de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: ${{ env.APP_DIR }}/coverage/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  docker:
+    name: Validar build da imagem Docker
+    runs-on: ubuntu-latest
+    needs: quality
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build da imagem (sem push)
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ ! -f "$APP_DIR/Dockerfile" ]; then
+            echo "::notice::Sem Dockerfile em $APP_DIR — etapa pulada."
+            exit 0
+          fi
+          # O Docker exige tag em minúsculas; o nome do repositório tem maiúsculas.
+          IMAGE="$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')"
+          docker build -t "$IMAGE:ci-$SHA" "$APP_DIR"
+
+  # Comentário com o resultado no PR. Job separado: é o único com permissão de
+  # escrita e não executa nenhum código vindo do PR.
+  comment:
+    name: Comentar resultado no PR
+    runs-on: ubuntu-latest
+    needs: [quality, docker]
+    # PRs de fork recebem token só de leitura: nesses, o comentário é pulado.
+    if: >-
+      always() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Criar ou atualizar o comentário do CI
+        # O comentário é informativo: nunca derruba o pipeline.
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          DOCKER: ${{ needs.docker.result }}
+          COVERAGE: ${{ needs.quality.outputs.coverage }}
+        with:
+          script: |
+            const marker = '<!-- vulture-ci-report -->';
+            const ok = process.env.QUALITY === 'success' && ['success', 'skipped'].includes(process.env.DOCKER);
+            const coverage = process.env.COVERAGE || 'n/d';
+            const body = [
+              marker,
+              `${ok ? '✅' : '❌'} **Pipeline de CI: ${ok ? 'aprovado' : 'reprovado'}**`,
+              '',
+              `- Lint, testes e build: \`${process.env.QUALITY}\``,
+              `- Imagem Docker: \`${process.env.DOCKER}\``,
+              `- Cobertura de linhas: **${coverage}%** (mínimo ${process.env.COVERAGE_THRESHOLD}%)`,
+              `- Commit: \`${context.sha.substring(0, 7)}\``,
+              `- [Ver execução completa](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            ].join('\n');
+
+            // Um comentário só por PR, atualizado a cada execução.
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }

@@ -141,3 +141,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Módulo de exemplo do template, aguardando remoção manual
+_to_delete/
